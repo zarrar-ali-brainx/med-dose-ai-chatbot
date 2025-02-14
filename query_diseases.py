@@ -33,67 +33,47 @@ def query_disease(query_text):
     print("-" * 50)
     
     try:
-        # Get the number of vectors in the namespace
-        stats = index.describe_index_stats()
-        namespace_stats = stats.namespaces.get(disease_name, {})
-        vector_count = namespace_stats.get('vector_count', 0)
-        
-        if vector_count == 0:
-            print("No vectors found in namespace")
-            return
-        
-        # Query all vectors in the namespace
+        # Get all vectors in the namespace
         results = index.query(
-            vector=[0] * 1536,  # Dummy vector to get all results
-            top_k=vector_count,
+            vector=[0]*1536,
+            top_k=1000,
             namespace=disease_name,
             include_metadata=True
         )
         
-        # Organize results by type and category path
-        main_info = None
-        categories = {}
+        # Load original disease data
+        with open("diseases.json", "r") as f:
+            diseases_data = json.load(f)
+        disease_data = diseases_data[disease_name]
         
-        # First pass: collect all data
+        # Organize results
+        print("\nMain Description:")
+        print("-" * 20)
+        print(disease_data['description'])
+        
+        # Build category map from original data
+        def build_category_map(categories):
+            category_map = {}
+            for cat in categories:
+                path = (cat['name'],)
+                category_map[path] = cat.get('content', [])
+                if 'subcategories' in cat:
+                    sub_map = build_category_map(cat['subcategories'])
+                    category_map.update({(cat['name'],) + k: v for k,v in sub_map.items()})
+            return category_map
+        
+        full_category_map = build_category_map(disease_data['categories'])
+        
+        # Print categories from Pinecone results
+        print("\nCategories:")
+        print("-" * 20)
         for match in results['matches']:
-            metadata = match['metadata']
-            if metadata['type'] == 'disease_main':
-                main_info = metadata
-            elif metadata['type'] == 'category':
-                path = tuple(metadata['category_path'])
-                categories[path] = metadata
-        
-        # Display main disease information
-        if main_info:
-            print("\nDisease Information:")
-            print("-" * 20)
-            print(main_info.get('description', ''))
-        
-        # Display categories in hierarchical order
-        if categories:
-            print("\nCategories:")
-            print("-" * 20)
-            
-            # Sort paths by length and content to maintain hierarchy
-            sorted_paths = sorted(categories.keys(), key=lambda x: (len(x), x))
-            
-            current_indent = 0
-            for path in sorted_paths:
-                # Calculate indent based on path length
-                indent = len(path) - 1
-                
-                # Print category name with proper indentation
-                print(f"\n{'  ' * indent}• {path[-1]}")
-                
-                # Print category content if available
-                metadata = categories[path]
-                if 'content' in metadata:
-                    content = metadata['content']
-                    if isinstance(content, list):
-                        for item in content:
-                            print(f"{'  ' * (indent + 1)}- {item}")
-                    else:
-                        print(f"{'  ' * (indent + 1)}- {content}")
+            if match['metadata']['type'] == 'category':
+                path = tuple(match['metadata']['category_path'])
+                if path in full_category_map:
+                    print(f"\n{' > '.join(path)}:")
+                    for item in full_category_map[path]:
+                        print(f"  - {item}")
         
     except Exception as e:
         print(f"Error querying Pinecone: {e}")

@@ -35,72 +35,75 @@ def clean_existing_data():
     
     print("All existing data cleaned!")
 
-def process_category_tree(disease_name, path, category_data, namespace):
-    """Process a category and its subcategories recursively"""
-    current_path = path + [category_data['name']]
-    
-    # Process current category's content if it exists
-    if 'content' in category_data and category_data['content']:
-        # Create category text with full path
-        category_text = f"Disease: {disease_name}\n"
-        category_text += " > ".join(current_path) + "\n"
-        category_text += " ".join(category_data['content'])
-        
-        cat_embedding = get_embedding(category_text)
-        if cat_embedding:
-            index.upsert(
-                vectors=[{
-                    'id': f"disease_{disease_name}_{'_'.join(current_path)}".replace(' ', '_'),
-                    'values': cat_embedding,
-                    'metadata': {
-                        'disease_name': disease_name,
-                        'category_path': current_path,
-                        'type': 'category',
-                        'content': category_data['content']
-                    }
-                }],
-                namespace=namespace
-            )
-            time.sleep(0.1)
-    
-    # Process subcategories if they exist
-    if 'subcategories' in category_data and category_data['subcategories']:
-        for subcategory in category_data['subcategories']:
-            process_category_tree(disease_name, current_path, subcategory, namespace)
-
 def create_embeddings():
     """Create embeddings for all diseases and their categories"""
-    print("\nCreating new embeddings...")
-    
-    # Load diseases data from file
-    with open("diseases.json", "r") as f:
-        diseases_data = json.load(f)
-    
-    # Create embeddings for diseases with their categories
-    for disease_name, data in tqdm(diseases_data.items(), desc="Processing Diseases"):
-        # Create embedding for main disease description
-        disease_text = f"Disease: {disease_name}\n{data['description']}"
-        embedding = get_embedding(disease_text)
+    try:
+        with open("diseases.json", "r") as f:
+            diseases_data = json.load(f)
         
-        if embedding:
-            # Store main disease info
+        print("\nCreating embeddings...")
+        
+        for disease_name, data in tqdm(diseases_data.items()):
+            namespace = disease_name
+            print(f"\nProcessing disease: {disease_name}")
+            
+            # Always create at least one vector per disease
+            description = data.get('description', "No description available")
+            description_embedding = get_embedding(description)
+            
+            # Create main disease vector (ensures namespace exists)
             index.upsert(
                 vectors=[{
-                    'id': f'disease_{disease_name}_main',
-                    'values': embedding,
+                    'id': f"{disease_name}_main",
+                    'values': description_embedding,
                     'metadata': {
                         'disease_name': disease_name,
                         'type': 'disease_main'
                     }
                 }],
-                namespace=disease_name
+                namespace=namespace
             )
             
-            # Process all categories recursively
-            for category in data['categories']:
-                process_category_tree(disease_name, [], category, disease_name)
+            # Process categories if they exist
+            if 'categories' in data and data['categories']:
+                def process_category(category, path=[]):
+                    # Create embedding for category content
+                    content = ' '.join(category.get('content', []))
+                    if content:
+                        cat_embedding = get_embedding(content)
+                        current_path = path + [category['name']]
+                        
+                        index.upsert(
+                            vectors=[{
+                                'id': f"{disease_name}_{'_'.join(current_path)}",
+                                'values': cat_embedding,
+                                'metadata': {
+                                    'disease_name': disease_name,
+                                    'category_path': current_path,
+                                    'type': 'category'
+                                }
+                            }],
+                            namespace=namespace
+                        )
+                    
+                    # Process subcategories recursively
+                    if 'subcategories' in category:
+                        for subcat in category['subcategories']:
+                            process_category(subcat, path + [category['name']])
+                
+                # Start processing root categories
+                for category in data['categories']:
+                    process_category(category)
             
-            time.sleep(0.1)
+            time.sleep(0.1)  # Rate limiting
+        
+        print("\nEmbeddings creation completed!")
+        print(f"Total diseases processed: {len(diseases_data)}")
+    
+    except Exception as e:
+        print(f"Error creating embeddings: {e}")
+        import traceback
+        traceback.print_exc()
 
 def verify_new_embeddings():
     """Verify the newly created embeddings"""
