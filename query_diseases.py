@@ -10,20 +10,14 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(PINECONE_INDEX_NAME)
 
-def query_disease(query_text):
-    print(f"\nQuerying for: {query_text}")
-    print("=" * 50)
-    
-    # Load diseases data just for name matching
+def query_disease(disease_query, category_path=None):
+    # Load diseases data for structure
     with open("diseases.json", "r") as f:
         diseases_data = json.load(f)
     
-    # Find matching disease name
-    disease_name = None
-    for name in diseases_data.keys():
-        if query_text.lower() in name.lower() or name.lower() in query_text.lower():
-            disease_name = name
-            break
+    # Find matching disease
+    disease_name = next((name for name in diseases_data.keys() 
+                        if disease_query.lower() in name.lower()), None)
     
     if not disease_name:
         print("No matching disease found")
@@ -32,53 +26,82 @@ def query_disease(query_text):
     print(f"\nIdentified Disease: {disease_name}")
     print("-" * 50)
     
-    try:
-        # Get all vectors in the namespace
-        results = index.query(
-            vector=[0]*1536,
-            top_k=1000,
-            namespace=disease_name,
-            include_metadata=True
-        )
-        
-        # Load original disease data
-        with open("diseases.json", "r") as f:
-            diseases_data = json.load(f)
-        disease_data = diseases_data[disease_name]
-        
-        # Organize results
-        print("\nMain Description:")
+    # Get disease data
+    disease_data = diseases_data[disease_name]
+    
+    # Build category map
+    def build_category_map(categories):
+        category_map = {}
+        for cat in categories:
+            path = (cat['name'],)
+            category_map[path] = cat.get('content', [])
+            if 'subcategories' in cat:
+                sub_map = build_category_map(cat['subcategories'])
+                category_map.update({path + k: v for k,v in sub_map.items()})
+        return category_map
+    
+    category_map = build_category_map(disease_data.get('categories', []))
+    
+    # Case 1: No category specified - show interactive selection
+    if not category_map:
+        # No categories available, show main description
+        print("\nDescription:")
         print("-" * 20)
-        print(disease_data['description'])
+        print(disease_data.get('description', 'No description available'))
+        return
+
+    # Interactive category selection
+    current_path = []
+    while True:
+        # Get current level categories
+        current_categories = []
+        for path in category_map.keys():
+            if len(path) == len(current_path) + 1 and path[:len(current_path)] == tuple(current_path):
+                current_categories.append(path[-1])
+
+        if not current_categories:
+            # Reached a terminal category, show content
+            content = category_map.get(tuple(current_path), [])
+            if content:
+                print(f"\n{' > '.join(current_path)} Content:")
+                print("-" * 50)
+                for item in content:
+                    print(f"• {item}")
+            else:
+                print("\nNo content available at this category level")
+            break
+
+        print(f"\nCurrent category path: {' > '.join(current_path) if current_path else 'Root'}")
+        print("Available subcategories:")
+        for i, cat in enumerate(current_categories, 1):
+            print(f"{i}. {cat}")
+        print("\nCommands: 'back', 'exit', or select a category number/name")
+
+        choice = input("Enter your choice: ").strip()
         
-        # Build category map from original data
-        def build_category_map(categories):
-            category_map = {}
-            for cat in categories:
-                path = (cat['name'],)
-                category_map[path] = cat.get('content', [])
-                if 'subcategories' in cat:
-                    sub_map = build_category_map(cat['subcategories'])
-                    category_map.update({(cat['name'],) + k: v for k,v in sub_map.items()})
-            return category_map
+        if choice.lower() == 'exit':
+            return
+        elif choice.lower() == 'back':
+            if current_path:
+                current_path.pop()
+            continue
         
-        full_category_map = build_category_map(disease_data['categories'])
+        # Try to match by number or name
+        selected = None
+        if choice.isdigit():
+            index = int(choice) - 1
+            if 0 <= index < len(current_categories):
+                selected = current_categories[index]
+        else:
+            for cat in current_categories:
+                if choice.lower() == cat.lower():
+                    selected = cat
+                    break
         
-        # Print categories from Pinecone results
-        print("\nCategories:")
-        print("-" * 20)
-        for match in results['matches']:
-            if match['metadata']['type'] == 'category':
-                path = tuple(match['metadata']['category_path'])
-                if path in full_category_map:
-                    print(f"\n{' > '.join(path)}:")
-                    for item in full_category_map[path]:
-                        print(f"  - {item}")
-        
-    except Exception as e:
-        print(f"Error querying Pinecone: {e}")
-        import traceback
-        traceback.print_exc()
+        if selected:
+            current_path.append(selected)
+        else:
+            print("Invalid selection. Please try again.")
 
 # Example usage
 if __name__ == "__main__":
