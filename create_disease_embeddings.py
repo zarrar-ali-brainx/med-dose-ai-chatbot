@@ -13,6 +13,12 @@ index = pc.Index(PINECONE_INDEX_NAME)
 
 def get_embedding(text, model="text-embedding-ada-002"):
     try:
+        # Truncate text if it's too long
+        max_tokens = 8192
+        if len(text.split()) > max_tokens:
+            print(f"Text too long for embedding, truncating to {max_tokens} tokens.")
+            text = ' '.join(text.split()[:max_tokens])
+        
         response = client.embeddings.create(
             input=text,
             model=model
@@ -35,13 +41,13 @@ def clean_existing_data():
     
     print("All existing data cleaned!")
 
-def create_embeddings():
-    """Create embeddings for all diseases and their categories"""
+def create_disease_embeddings():
+    """Create embeddings for all diseases"""
     try:
         with open("diseases.json", "r") as f:
             diseases_data = json.load(f)
         
-        print("\nCreating embeddings...")
+        print("\nCreating disease embeddings...")
         
         for disease_name, data in tqdm(diseases_data.items()):
             namespace = disease_name
@@ -52,17 +58,18 @@ def create_embeddings():
             description_embedding = get_embedding(description)
             
             # Create main disease vector (ensures namespace exists)
-            index.upsert(
-                vectors=[{
-                    'id': f"{disease_name}_main",
-                    'values': description_embedding,
-                    'metadata': {
-                        'disease_name': disease_name,
-                        'type': 'disease_main'
-                    }
-                }],
-                namespace=namespace
-            )
+            if description_embedding:
+                index.upsert(
+                    vectors=[{
+                        'id': f"{disease_name}_main",
+                        'values': description_embedding,
+                        'metadata': {
+                            'disease_name': disease_name,
+                            'type': 'disease_main'
+                        }
+                    }],
+                    namespace=namespace
+                )
             
             # Process categories if they exist
             if 'categories' in data and data['categories']:
@@ -73,18 +80,19 @@ def create_embeddings():
                         cat_embedding = get_embedding(content)
                         current_path = path + [category['name']]
                         
-                        index.upsert(
-                            vectors=[{
-                                'id': f"{disease_name}_{'_'.join(current_path)}",
-                                'values': cat_embedding,
-                                'metadata': {
-                                    'disease_name': disease_name,
-                                    'category_path': current_path,
-                                    'type': 'category'
-                                }
-                            }],
-                            namespace=namespace
-                        )
+                        if cat_embedding:
+                            index.upsert(
+                                vectors=[{
+                                    'id': f"{disease_name}_{'_'.join(current_path)}",
+                                    'values': cat_embedding,
+                                    'metadata': {
+                                        'disease_name': disease_name,
+                                        'category_path': current_path,
+                                        'type': 'category'
+                                    }
+                                }],
+                                namespace=namespace
+                            )
                     
                     # Process subcategories recursively
                     if 'subcategories' in category:
@@ -97,11 +105,53 @@ def create_embeddings():
             
             time.sleep(0.1)  # Rate limiting
         
-        print("\nEmbeddings creation completed!")
+        print("\nDisease embeddings creation completed!")
         print(f"Total diseases processed: {len(diseases_data)}")
     
     except Exception as e:
-        print(f"Error creating embeddings: {e}")
+        print(f"Error creating disease embeddings: {e}")
+        import traceback
+        traceback.print_exc()
+
+def create_medicine_embeddings():
+    """Create embeddings for all medicines"""
+    try:
+        with open("medicines.json", "r") as f:
+            medicines_data = json.load(f)
+        
+        print("\nCreating medicine embeddings...")
+        
+        for medicine_name, content in tqdm(medicines_data.items()):
+            print(f"\nProcessing medicine: {medicine_name}")
+            content_embedding = get_embedding(content)
+            
+            if content_embedding:
+                # Debug: Print the embedding and namespace details
+                print(f"Embedding for {medicine_name}: {content_embedding[:5]}... (truncated)")
+                print(f"Storing in namespace: 'medicines'")
+                
+                # Create medicine vector in the 'medicines' namespace
+                index.upsert(
+                    vectors=[{
+                        'id': f"{medicine_name}_content",
+                        'values': content_embedding,
+                        'metadata': {
+                            'medicine_name': medicine_name,
+                            'type': 'medicine'
+                        }
+                    }],
+                    namespace="medicines"
+                )
+            else:
+                print(f"Failed to create embedding for {medicine_name}. Skipping.")
+            
+            time.sleep(0.1)  # Rate limiting
+        
+        print("\nMedicine embeddings creation completed!")
+        print(f"Total medicines processed: {len(medicines_data)}")
+    
+    except Exception as e:
+        print(f"Error creating medicine embeddings: {e}")
         import traceback
         traceback.print_exc()
 
@@ -124,8 +174,11 @@ if __name__ == "__main__":
         # Clean existing data
         clean_existing_data()
         
-        # Create new embeddings
-        create_embeddings()
+        # Create new embeddings for diseases
+        create_disease_embeddings()
+        
+        # Create new embeddings for medicines
+        create_medicine_embeddings()
         
         # Verify the results
         verify_new_embeddings()
