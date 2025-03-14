@@ -51,6 +51,10 @@ def create_embeddings():
             description = data.get('description', "No description available")
             description_embedding = get_embedding(description)
             
+            if not description_embedding:
+                print(f"Warning: Failed to get embedding for {disease_name} description. Skipping...")
+                continue
+            
             # Create main disease vector (ensures namespace exists)
             index.upsert(
                 vectors=[{
@@ -58,44 +62,71 @@ def create_embeddings():
                     'values': description_embedding,
                     'metadata': {
                         'disease_name': disease_name,
-                        'type': 'disease_main'
+                        'type': 'disease_main',
+                        'description': description
                     }
                 }],
                 namespace=namespace
             )
+            time.sleep(0.1)  # Rate limiting
             
             # Process categories if they exist
             if 'categories' in data and data['categories']:
                 def process_category(category, path=[]):
+                    current_path = path + [category['name']]
+                    print(f"  Processing category: {' > '.join(current_path)}")
+                    
                     # Create embedding for category content
-                    content = ' '.join(category.get('content', []))
-                    if content:
-                        cat_embedding = get_embedding(content)
-                        current_path = path + [category['name']]
-                        
-                        index.upsert(
-                            vectors=[{
-                                'id': f"{disease_name}_{'_'.join(current_path)}",
-                                'values': cat_embedding,
-                                'metadata': {
-                                    'disease_name': disease_name,
-                                    'category_path': current_path,
-                                    'type': 'category'
-                                }
-                            }],
-                            namespace=namespace
-                        )
+                    content = category.get('content', [])
+                    if isinstance(content, list):
+                        content = ' '.join(content)
+                    
+                    # Even if content is empty, we still want to create a vector for the category
+                    if not content:
+                        content = f"Category: {category['name']}"
+                    
+                    cat_embedding = get_embedding(content)
+                    if not cat_embedding:
+                        print(f"  Warning: Failed to get embedding for category {' > '.join(current_path)}. Skipping...")
+                        return
+                    
+                    # Create a unique ID for this category
+                    category_id = f"{disease_name}_{'_'.join(current_path)}"
+                    
+                    # Upsert the category vector
+                    index.upsert(
+                        vectors=[{
+                            'id': category_id,
+                            'values': cat_embedding,
+                            'metadata': {
+                                'disease_name': disease_name,
+                                'category_path': current_path,
+                                'type': 'category',
+                                'content': content,
+                                'category_name': category['name']
+                            }
+                        }],
+                        namespace=namespace
+                    )
+                    time.sleep(0.1)  # Rate limiting
                     
                     # Process subcategories recursively
-                    if 'subcategories' in category:
+                    if 'subcategories' in category and category['subcategories']:
                         for subcat in category['subcategories']:
-                            process_category(subcat, path + [category['name']])
+                            process_category(subcat, current_path)
                 
                 # Start processing root categories
                 for category in data['categories']:
                     process_category(category)
             
-            time.sleep(0.1)  # Rate limiting
+            # Verify the vectors for this disease
+            time.sleep(0.5)  # Give Pinecone time to index
+            stats = index.describe_index_stats()
+            if namespace in stats.namespaces:
+                vector_count = stats.namespaces[namespace].vector_count
+                print(f"Verified: {namespace} has {vector_count} vectors")
+            else:
+                print(f"Warning: Namespace {namespace} not found in index!")
         
         print("\nEmbeddings creation completed!")
         print(f"Total diseases processed: {len(diseases_data)}")
